@@ -1,0 +1,51 @@
+{
+  "expo": {
+    "name": "Vintage Digi",
+    "slug": "vintage-digi",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.jst95.vintagedigi",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Vintage Digi uses the camera to capture photos and video.",
+        "NSMicrophoneUsageDescription": "Vintage Digi uses the microphone to record audio with video.",
+        "NSPhotoLibraryAddUsageDescription": "Vintage Digi saves your captured photos to your library."
+      }
+    },
+    "android": {
+      "package": "com.jst95.vintagedigi",
+      "adaptiveIcon": {
+        "backgroundColor": "#0A0A0A",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "deploymentTarget": "17.0"
+          }
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "savePhotosPermission": "Allow Vintage Digi to save photos to your library.",
+          "isAccessMediaLocationEnabled": false
+        }
+      ]
+    ]
+  }
+}

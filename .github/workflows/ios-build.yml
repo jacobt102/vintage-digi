@@ -1,0 +1,72 @@
+name: iOS Unsigned IPA
+
+# macOS runners bill at a ~10x minute multiplier. On a PRIVATE repo, GitHub Free's
+# 2,000 min/month is only ~200 effective macOS minutes (8-20 builds). Public repos get
+# unlimited Actions minutes. Keep this repo public, or expect to ration builds.
+#
+# push-to-main is intentionally NOT a trigger: every accidental push would burn a build.
+# Run this manually from the Actions tab when you actually need an IPA.
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install JS dependencies
+        run: npm ci
+
+      - name: Prebuild iOS project
+        # ios/ is gitignored, so the native project is generated here.
+        # --no-install because npm ci already ran.
+        run: npx expo prebuild --platform ios --no-install
+        env:
+          EXPO_NO_TELEMETRY: '1'
+
+      - name: Install CocoaPods
+        working-directory: ios
+        run: pod install --repo-update
+
+      - name: Resolve workspace and scheme
+        id: xc
+        run: |
+          WS=$(ls -d ios/*.xcworkspace | head -1)
+          echo "ws=$WS" >> $GITHUB_OUTPUT
+          echo "scheme=$(basename "$WS" .xcworkspace)" >> $GITHUB_OUTPUT
+
+      - name: Build (unsigned)
+        run: |
+          xcodebuild \
+            -workspace "${{ steps.xc.outputs.ws }}" \
+            -scheme "${{ steps.xc.outputs.scheme }}" \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            ONLY_ACTIVE_ARCH=NO \
+            build
+
+      - name: Package unsigned IPA
+        # An .ipa is just a zip with the .app inside a Payload/ directory.
+        # Sideloadly re-signs this on install with your free Apple ID.
+        run: |
+          mkdir -p Payload
+          cp -r build/Build/Products/Release-iphoneos/*.app Payload/
+          zip -qry VintageDigi-unsigned.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VintageDigi-unsigned-ipa
+          path: VintageDigi-unsigned.ipa
+          retention-days: 14
