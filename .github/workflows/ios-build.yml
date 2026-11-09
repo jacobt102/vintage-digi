@@ -45,9 +45,9 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '22'
           cache: 'npm'
@@ -136,7 +136,10 @@ jobs:
             fi
           fi
           zip -qry VintageDigi.ipa Payload
-          printf '%s' "${{ steps.rv.outputs.runtime }}" > runtime-version.txt
+          # GitHub rejects 0-byte release assets. "none" = built without OTA; it never matches
+          # a real fingerprint, so ota-update.yml will dispatch a proper build once configured.
+          RV="${{ steps.rv.outputs.runtime }}"
+          printf '%s' "${RV:-none}" > runtime-version.txt
           plutil -convert json -o built-info-plist.json Payload/*.app/Info.plist
 
       - name: Write SideStore source
