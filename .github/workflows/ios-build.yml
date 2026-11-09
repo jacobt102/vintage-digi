@@ -1,13 +1,40 @@
-name: iOS Unsigned IPA
+name: iOS Build (SideStore)
 
-# macOS runners bill at a ~10x minute multiplier. On a PRIVATE repo, GitHub Free's
-# 2,000 min/month is only ~200 effective macOS minutes (8-20 builds). Public repos get
-# unlimited Actions minutes. Keep this repo public, or expect to ration builds.
+# Builds an unsigned .ipa on a GitHub-hosted macOS runner and publishes it as a GitHub
+# Release together with a SideStore "source" (source.json). SideStore on the iPhone watches
+# that source, so a new native build shows up there as an update — no computer, no cable.
 #
-# push-to-main is intentionally NOT a trigger: every accidental push would burn a build.
-# Run this manually from the Actions tab when you actually need an IPA.
+# Only NATIVE changes need this workflow. JS/TS changes ship over the air via
+# ota-update.yml, which also dispatches this workflow automatically when it detects that a
+# push changed native code (the expo-updates fingerprint no longer matches the latest
+# release). You can also run it by hand from the Actions tab.
+#
+# macOS runners bill at ~10x on PRIVATE repos. Keep this repo public: public repos get
+# unlimited Actions minutes, and SideStore must be able to download the release anonymously.
 on:
   workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Why this build (shown in the run name)'
+        required: false
+        default: 'manual'
+
+run-name: 'iOS build: ${{ inputs.reason }}'
+
+# A newer build makes an in-progress one pointless.
+concurrency:
+  group: ios-build
+  cancel-in-progress: true
+
+permissions:
+  contents: write # create the GitHub Release
+
+env:
+  EXPO_NO_TELEMETRY: '1'
+  # Repository *variable* (Settings → Secrets and variables → Actions → Variables).
+  # Must be present for prebuild AND xcodebuild: it changes the resolved app config, which
+  # is part of the runtime fingerprint. Without it the build works but has no OTA updates.
+  EAS_PROJECT_ID: ${{ vars.EAS_PROJECT_ID }}
 
 jobs:
   build:
@@ -18,9 +45,9 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '22'
           cache: 'npm'
@@ -28,12 +55,33 @@ jobs:
       - name: Install JS dependencies
         run: npm ci
 
+      - name: Warn if OTA updates are not configured
+        if: env.EAS_PROJECT_ID == ''
+        run: echo "::warning::EAS_PROJECT_ID repository variable is not set. This build will NOT receive over-the-air updates. See README → One-time setup."
+
+      - name: Compute version numbers
+        id: ver
+        run: |
+          # app.json "1.0.0" + run 42 → 1.0.42 (42). The patch number must change every build
+          # or SideStore won't offer it as an update. Stamped into Info.plist after prebuild,
+          # NOT into app config, because app config is part of the runtime fingerprint.
+          BASE=$(node -p "require('./app.json').expo.version.split('.').slice(0,2).join('.')")
+          echo "build=${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "version=${BASE}.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "tag=ios-build-${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve expo-updates runtime version
+        id: rv
+        run: |
+          RV=$(npx expo-updates runtimeversion:resolve --platform ios 2>/dev/null | tail -n 1 \
+            | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>console.log(JSON.parse(s).runtimeVersion ?? ''))")
+          echo "Runtime version: ${RV:-<none>}"
+          echo "runtime=${RV}" >> "$GITHUB_OUTPUT"
+
       - name: Prebuild iOS project
         # ios/ is gitignored, so the native project is generated here.
         # --no-install because npm ci already ran.
         run: npx expo prebuild --platform ios --no-install
-        env:
-          EXPO_NO_TELEMETRY: '1'
 
       - name: Install CocoaPods
         working-directory: ios
@@ -46,7 +94,17 @@ jobs:
           echo "ws=$WS" >> $GITHUB_OUTPUT
           echo "scheme=$(basename "$WS" .xcworkspace)" >> $GITHUB_OUTPUT
 
+      - name: Stamp version into Info.plist
+        run: |
+          PLIST="ios/${{ steps.xc.outputs.scheme }}/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${{ steps.ver.outputs.version }}" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ steps.ver.outputs.build }}" "$PLIST"
+
       - name: Build (unsigned)
+        env:
+          # Pin the fingerprint Xcode embeds to the one resolved above, so the value recorded
+          # in the release (and compared by ota-update.yml) is exactly what the app reports.
+          EXPO_UPDATES_FINGERPRINT_OVERRIDE: ${{ steps.rv.outputs.runtime }}
         run: |
           xcodebuild \
             -workspace "${{ steps.xc.outputs.ws }}" \
@@ -62,14 +120,57 @@ jobs:
 
       - name: Package unsigned IPA
         # An .ipa is just a zip with the .app inside a Payload/ directory.
-        # Sideloadly re-signs this on install with your free Apple ID.
+        # SideStore re-signs it on the phone with your free Apple ID.
         run: |
           mkdir -p Payload
           cp -r build/Build/Products/Release-iphoneos/*.app Payload/
-          zip -qry VintageDigi-unsigned.ipa Payload
+          if [ -n "$EAS_PROJECT_ID" ]; then
+            FP_FILE=$(find Payload -path '*EXUpdates.bundle*' -name fingerprint | head -1)
+            EMBEDDED=$([ -n "$FP_FILE" ] && cat "$FP_FILE" || true)
+            echo "Embedded fingerprint: ${EMBEDDED:-<not found>} (${FP_FILE:-no file})"
+            if [ -z "$EMBEDDED" ]; then
+              echo "::warning::Could not find the embedded expo-updates fingerprint to verify it."
+            elif [ "$EMBEDDED" != "${{ steps.rv.outputs.runtime }}" ]; then
+              echo "::error::Embedded runtime fingerprint does not match the resolved one; OTA updates would never apply."
+              exit 1
+            fi
+          fi
+          zip -qry VintageDigi.ipa Payload
+          # GitHub rejects 0-byte release assets. "none" = built without OTA; it never matches
+          # a real fingerprint, so ota-update.yml will dispatch a proper build once configured.
+          RV="${{ steps.rv.outputs.runtime }}"
+          printf '%s' "${RV:-none}" > runtime-version.txt
+          plutil -convert json -o built-info-plist.json Payload/*.app/Info.plist
+
+      - name: Write SideStore source
+        env:
+          SOURCE_URL: https://github.com/${{ github.repository }}/releases/latest/download/source.json
+          ICON_URL: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/assets/icon.png
+          IPA_URL: https://github.com/${{ github.repository }}/releases/download/${{ steps.ver.outputs.tag }}/VintageDigi.ipa
+          IPA_PATH: VintageDigi.ipa
+          APP_VERSION: ${{ steps.ver.outputs.version }}
+          BUILD_NUMBER: ${{ steps.ver.outputs.build }}
+          RUNTIME_VERSION: ${{ steps.rv.outputs.runtime }}
+          COMMIT_SHA: ${{ github.sha }}
+          INFO_PLIST_JSON: built-info-plist.json
+        run: node scripts/make-sidestore-source.mjs
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          # A re-run reuses the run number; replace that release rather than fail.
+          gh release delete "$TAG" --cleanup-tag --yes 2>/dev/null || true
+          gh release create "$TAG" \
+            VintageDigi.ipa source.json runtime-version.txt \
+            --target "$GITHUB_SHA" \
+            --title "Vintage Digi ${{ steps.ver.outputs.version }}" \
+            --notes "Unsigned build for SideStore. Runtime fingerprint: \`${{ steps.rv.outputs.runtime }}\`. Source URL: https://github.com/${{ github.repository }}/releases/latest/download/source.json" \
+            --latest
 
       - uses: actions/upload-artifact@v4
         with:
           name: VintageDigi-unsigned-ipa
-          path: VintageDigi-unsigned.ipa
+          path: VintageDigi.ipa
           retention-days: 14
