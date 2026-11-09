@@ -30,7 +30,11 @@ env:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    # Same image as ios-build.yml on purpose. The runtime fingerprint hashes installed native
+    # packages; resolving it on the same OS/Node/npm as the build rules out a platform
+    # difference that would make every update miss (and re-dispatch builds forever).
+    # Free on public repos, like the build.
+    runs-on: macos-26
     timeout-minutes: 20
 
     steps:

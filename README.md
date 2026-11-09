@@ -86,7 +86,7 @@ or `OTA <id> <date>` (an over-the-air update).
   with `EXPO_UPDATES_FINGERPRINT_OVERRIDE`, and publishes release `ios-build-<run>` with
   `VintageDigi.ipa`, `source.json` and `runtime-version.txt`. The version is
   `<app.json major.minor>.<run number>`, so every build is a new version for SideStore.
-- **`ota-update.yml`** (Linux runner) runs `eas update --channel production` on every push
+- **`ota-update.yml`** (same macOS image as the build, so fingerprints compare like-for-like) runs `eas update --channel production` on every push
   to `main`, compares the fingerprint with the latest release's `runtime-version.txt`, and
   dispatches a native rebuild if they differ (including the very first time).
 - **`src/updates/useOtaUpdates.ts`** applies a downloaded update immediately if it arrives
