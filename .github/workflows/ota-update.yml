@@ -1,0 +1,97 @@
+name: OTA Update
+
+# Every push to main publishes the JS bundle to EAS Update (channel "production"). The app
+# on the phone downloads it the next time it opens or comes back to the foreground.
+#
+# An update only reaches builds whose runtime fingerprint matches. If this push changed
+# native code (new/upgraded native module, app.json native config, Expo SDK bump…), the
+# fingerprint no longer matches the latest SideStore build, so this workflow dispatches
+# ios-build.yml to make a new one. You then tap Update in SideStore.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - '.github/workflows/ios-build.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ota-update
+  cancel-in-progress: false # let each publish finish; they're quick
+
+permissions:
+  contents: read
+  actions: write # dispatch ios-build.yml when native code changed
+
+env:
+  EXPO_NO_TELEMETRY: '1'
+  EAS_PROJECT_ID: ${{ vars.EAS_PROJECT_ID }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check configuration
+        env:
+          HAS_TOKEN: ${{ secrets.EXPO_TOKEN != '' }}
+        run: |
+          if [ -z "$EAS_PROJECT_ID" ] || [ "$HAS_TOKEN" != "true" ]; then
+            echo "::error::Set the EAS_PROJECT_ID repository variable and the EXPO_TOKEN repository secret first. See README → One-time setup."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install JS dependencies
+        run: npm ci
+
+      - uses: expo/expo-github-action@v8
+        with:
+          eas-version: 27.5.0
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Compare runtime with latest SideStore build
+        id: rv
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RV=$(npx expo-updates runtimeversion:resolve --platform ios 2>/dev/null | tail -n 1 \
+            | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>console.log(JSON.parse(s).runtimeVersion ?? ''))")
+          LATEST=$(gh release download --repo "$GITHUB_REPOSITORY" --pattern runtime-version.txt --output - 2>/dev/null || true)
+          echo "This commit:         ${RV}"
+          echo "Latest iOS release:  ${LATEST:-<none>}"
+          echo "runtime=${RV}" >> "$GITHUB_OUTPUT"
+          if [ "$RV" = "$LATEST" ]; then
+            echo "native_changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "native_changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish update
+        # Published even when native code changed: harmless (no installed build matches yet),
+        # and it keeps the channel's history in step with main.
+        run: |
+          MSG=$(git log -1 --pretty=%s | head -c 200)
+          eas update \
+            --channel production \
+            --environment production \
+            --platform ios \
+            --message "$MSG" \
+            --non-interactive
+
+      - name: Dispatch native rebuild
+        if: steps.rv.outputs.native_changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "::notice::Native fingerprint changed (${{ steps.rv.outputs.runtime }}). Starting iOS build; install it from SideStore when it finishes."
+          gh workflow run ios-build.yml --repo "$GITHUB_REPOSITORY" --ref main \
+            -f reason="native change in ${GITHUB_SHA::7}"

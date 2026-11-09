@@ -6,6 +6,10 @@ import {
   type FrameStatsShared,
   type FrameStatsValues,
 } from './FrameStats';
+import { currentBundleLabel } from '../updates/useOtaUpdates';
+
+// Constant for the life of the JS runtime: an update only takes effect via a reload.
+const BUNDLE_LABEL = currentBundleLabel();
 
 const SAMPLE_INTERVAL_MS = 500;
 
@@ -47,6 +51,7 @@ export function FrameStatsOverlay({ stats, shaderEnabled }: Props) {
         OVER {snapshot.overBudget} ({overBudgetPct.toFixed(1)}%)
       </Text>
       <Text style={styles.row}>GRADE {shaderEnabled ? 'ON' : 'OFF'}</Text>
+      <Text style={styles.row}>JS {BUNDLE_LABEL}</Text>
     </View>
   );
 }

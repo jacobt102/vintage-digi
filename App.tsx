@@ -3,11 +3,13 @@ import { usePermissions } from 'expo-media-library';
 import React, { useEffect } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { CameraScreen } from './src/camera/CameraScreen';
+import { useOtaUpdates } from './src/updates/useOtaUpdates';
 
 export default function App() {
   // Write-only: the spike saves photos but never reads the existing library, so requesting
   // full access here would ask for more than the app actually uses.
   const [permission, requestPermission] = usePermissions({ writeOnly: true });
+  useOtaUpdates();
 
   useEffect(() => {
     if (permission != null && !permission.granted && permission.canAskAgain) {

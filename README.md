@@ -1,6 +1,8 @@
 # Vintage Digi
 
-A local-only vintage/nostalgic camera app for iPhone. No backend, no accounts, no network calls.
+A local-only vintage/nostalgic camera app for iPhone. No backend, no accounts. The only network
+traffic is the app checking Expo's update server for new JS bundles (EAS Update); photos never
+leave the device.
 
 **Current state: Phase 1 spike (go/no-go).** The app is a single camera screen with one
 hardcoded grade, a frame-time readout, and a capture button that saves a graded still to
@@ -17,6 +19,7 @@ Photos. The look system, night vision, video, and editor are not built yet.
 | Real-time render | `react-native-vision-camera-skia` 5.2.1 + `@shopify/react-native-skia` 2.10.1 |
 | Worklets | `react-native-worklets` 0.11.3 + `react-native-reanimated` 4.5.3 |
 | Photos | `expo-media-library` 57.0.3 |
+| OTA updates | `expo-updates` 57.0.27 (EAS Update, fingerprint runtime) |
 | Min target | iOS 17 |
 
 All versions are pinned exactly (no `^`). `react-native-vision-camera-skia` is young — 28
@@ -55,33 +58,59 @@ npx expo export --platform android --output-dir /tmp/exporttest   # proves the b
 
 ---
 
-## Building for iOS
+## Getting it on your iPhone (SideStore + EAS Update)
 
-`.github/workflows/ios-build.yml` builds an **unsigned** `.ipa` on a GitHub-hosted macOS runner.
+No Mac, no paid Apple account, and no computer after the one-time setup.
+**Step-by-step setup: [docs/IPHONE_SETUP.md](docs/IPHONE_SETUP.md).**
 
-It is `workflow_dispatch` only — deliberately not on push, so a stray commit cannot burn a
-build. Trigger it from the Actions tab, download the `VintageDigi-unsigned-ipa` artifact, then
-install with [Sideloadly](https://sideloadly.io) or [AltStore](https://altstore.io) over USB
-using a free Apple ID.
+| You change… | What happens | What you do |
+|---|---|---|
+| JS/TS only (shader, UI, capture logic) | `ota-update.yml` publishes to EAS Update on push to `main` | Nothing. The app picks it up the next time it opens or returns to the foreground |
+| Native code (native module added/upgraded, native config in `app.json`, SDK bump) | `ota-update.yml` sees the runtime fingerprint changed and dispatches `ios-build.yml`, which publishes a GitHub Release + SideStore source | Tap **Update** in SideStore when the build finishes (~20–30 min) |
+| Nothing — it's been a week | The free-Apple-ID signature is about to expire | Open SideStore → **Refresh All** (no rebuild) |
+
+The overlay's `JS` row shows which bundle is running: `EMBEDDED` (what shipped in the IPA)
+or `OTA <id> <date>` (an over-the-air update).
+
+### How the pieces fit
+
+- **`app.config.js`** layers the update settings over `app.json`. The EAS project ID comes from
+  the `EAS_PROJECT_ID` repository variable, so no file needs editing. Without it, OTA is
+  disabled and the app just runs its embedded bundle.
+- **Runtime version = fingerprint.** `expo-updates` hashes the native-relevant inputs
+  (dependencies, config plugins, native config). An update is only delivered to a build with
+  the same hash, so a JS update can never land on a binary missing a native module it needs.
+  Never put per-build values (build numbers, dates) in app config; they would change the
+  hash. `ios-build.yml` stamps version numbers into `Info.plist` after prebuild instead.
+- **`ios-build.yml`** (macOS runner) builds an unsigned IPA, pins the embedded fingerprint
+  with `EXPO_UPDATES_FINGERPRINT_OVERRIDE`, and publishes release `ios-build-<run>` with
+  `VintageDigi.ipa`, `source.json` and `runtime-version.txt`. The version is
+  `<app.json major.minor>.<run number>`, so every build is a new version for SideStore.
+- **`ota-update.yml`** (Linux runner) runs `eas update --channel production` on every push
+  to `main`, compares the fingerprint with the latest release's `runtime-version.txt`, and
+  dispatches a native rebuild if they differ (including the very first time).
+- **`src/updates/useOtaUpdates.ts`** applies a downloaded update immediately if it arrives
+  within a few seconds of launch/foreground; otherwise it waits for the next foreground, so
+  it never reloads while you're framing a shot.
+- **SideStore source URL** (add once in SideStore):
+  `https://github.com/jacobt102/vintage-digi/releases/latest/download/source.json`
 
 ### Keep this repository public
 
-macOS runners bill at a **~10× minute multiplier**. GitHub Free's 2,000 minutes/month is only
-about **200 effective macOS minutes** on a private repo — roughly **8–20 builds/month**, which
-Phase 0 alone can consume on CocoaPods and signing failures. **Public repositories get
-unlimited Actions minutes.** If this must stay private, use Codemagic's free tier (500 min/mo,
-no multiplier) instead.
+Two reasons: macOS runners bill at a **~10× minute multiplier** on private repos (GitHub Free
+is only ~200 effective macOS minutes/month), while public repos get unlimited minutes; and
+SideStore downloads the source and IPA anonymously, which fails for private releases.
 
 ### Free Apple ID constraints
 
-- App expires after **7 days** — re-run Sideloadly to re-sign. No rebuild needed, so this
-  costs zero CI minutes.
-- **3 sideloaded apps** maximum per Apple ID.
-- Sideloadly rewrites the bundle ID; keep `ios.bundleIdentifier` in `app.json` stable and
-  reverse-DNS.
-- First launch: Settings → General → VPN & Device Management → trust the developer cert.
-
-A $99/yr paid account removes the 7-day expiry and unlocks TestFlight. Nothing else changes.
+- The app signature lasts **7 days**. Refresh in SideStore before it lapses; refreshing
+  re-signs, it does not rebuild. If it lapses, the app won't open until you refresh (photos
+  you saved are in Photos and are unaffected).
+- **3 active sideloaded apps** per Apple ID, and SideStore itself uses one.
+- **10 App IDs per 7 days.** Each distinct app you install uses one; updating the same app
+  does not.
+- SideStore rewrites the bundle ID when signing; keep `ios.bundleIdentifier` in `app.json`
+  stable. It doesn't affect OTA updates.
 
 ---
 
@@ -94,9 +123,16 @@ src/
 │   ├── gradeShader.ts             compiled RuntimeEffect, shared by preview + capture
 │   └── captureGraded.ts           capture → offscreen render → PNG → Photos
 ├── camera/CameraScreen.tsx        SkiaCamera preview, shutter, grade toggle
-└── perf/
-    ├── FrameStats.ts              worklet-side frame timing
-    └── FrameStatsOverlay.tsx      on-screen readout, sampled at 2Hz
+├── perf/
+│   ├── FrameStats.ts              worklet-side frame timing
+│   └── FrameStatsOverlay.tsx      on-screen readout, sampled at 2Hz
+└── updates/useOtaUpdates.ts       applies EAS updates on launch / foreground
+app.config.js                      OTA config layered over app.json (reads EAS_PROJECT_ID)
+eas.json                           minimal EAS CLI config (channel: production)
+scripts/make-sidestore-source.mjs  writes the SideStore source.json for each build
+.github/workflows/
+├── ios-build.yml                  native build → GitHub Release + SideStore source
+└── ota-update.yml                 push to main → EAS Update (+ rebuild if native changed)
 ```
 
 **One shader, two call sites.** `gradeShader.ts` compiles the effect once at module scope; both
