@@ -67,7 +67,7 @@ No Mac, no paid Apple account, and no computer after the one-time setup.
 |---|---|---|
 | JS/TS only (shader, UI, capture logic) | `ota-update.yml` publishes to EAS Update on push to `main` | Nothing. The app picks it up the next time it opens or returns to the foreground |
 | Native code (native module added/upgraded, native config in `app.json`, SDK bump) | `ota-update.yml` sees the runtime fingerprint changed and dispatches `ios-build.yml`, which publishes a GitHub Release + SideStore source | Tap **Update** in SideStore when the build finishes (~20–30 min) |
-| Nothing — it's been a week | The free-Apple-ID signature is about to expire | Open SideStore → **Refresh All** (no rebuild) |
+| Nothing — it's been a week | The free-Apple-ID signature is about to expire | LocalDevVPN **Connect** → SideStore → **Refresh All** (no rebuild) |
 
 The overlay's `JS` row shows which bundle is running: `EMBEDDED` (what shipped in the IPA)
 or `OTA <id> <date>` (an over-the-air update).
@@ -109,6 +109,7 @@ SideStore downloads the source and IPA anonymously, which fails for private rele
 - **3 active sideloaded apps** per Apple ID, and SideStore itself uses one.
 - **10 App IDs per 7 days.** Each distinct app you install uses one; updating the same app
   does not.
+- SideStore needs **LocalDevVPN connected and Wi-Fi** for every install, update and refresh.
 - SideStore rewrites the bundle ID when signing; keep `ios.bundleIdentifier` in `app.json`
   stable. It doesn't affect OTA updates.
 

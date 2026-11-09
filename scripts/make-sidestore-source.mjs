@@ -16,9 +16,12 @@
 //                   Used for the privacy keys and to check the stamped version.
 //   OUT             where to write the JSON (default: source.json)
 //
-// SideStore refuses to install if the IPA's version doesn't match `version` here, so the
-// workflow and this script must use the same APP_VERSION.
+// SideStore refuses to install if `version`/`buildVersion` here differ from the IPA's
+// CFBundleShortVersionString/CFBundleVersion, and only offers an update when the x.y.z
+// `version` is HIGHER than the installed one (buildVersion alone is ignored). Hence the
+// workflow's 1.0.<run number> scheme. Don't add `marketplaceID`: SideStore rejects it.
 
+import { createHash } from 'node:crypto';
 import { readFileSync, statSync, writeFileSync } from 'node:fs';
 
 function required(name) {
@@ -39,7 +42,10 @@ const deploymentTarget =
 const sourceUrl = required('SOURCE_URL');
 const iconUrl = required('ICON_URL');
 const ipaUrl = required('IPA_URL');
-const size = statSync(required('IPA_PATH')).size;
+const ipaPath = required('IPA_PATH');
+const size = statSync(ipaPath).size;
+// SideStore verifies the download against this when present.
+const sha256 = createHash('sha256').update(readFileSync(ipaPath)).digest('hex');
 const version = required('APP_VERSION');
 const buildVersion = required('BUILD_NUMBER');
 const runtimeVersion = process.env.RUNTIME_VERSION?.trim() || 'n/a';
@@ -82,6 +88,7 @@ const app = {
       localizedDescription: notes,
       downloadURL: ipaUrl,
       size,
+      sha256,
       minOSVersion: deploymentTarget,
     },
   ],
